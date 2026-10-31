@@ -1,9 +1,9 @@
 # GitHub
 
-**Difficulty:** 🟢 Easy
-**Time to first test user:** ~5 minutes ✅ Tested
-**Time to public launch:** ~5 minutes, no approval needed ✅ Tested
-**Last checked:** October 2026
+- **Difficulty:** 🟢 Easy
+- **Time to first test user:** ~5 minutes ✅ Tested
+- **Time to public launch:** ~5 minutes, no approval needed ✅ Tested
+- **Last checked:** October 2026
 
 ## What you need before starting
 - A GitHub account
