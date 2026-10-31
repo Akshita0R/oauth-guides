@@ -1,7 +1,8 @@
 import pathlib
 
-import anthropic
 import streamlit as st
+from google import genai
+from google.genai import errors, types
 
 st.set_page_config(page_title="OAuth Setup Guides", page_icon="🔑")
 
@@ -34,28 +35,24 @@ Rules:
 """
 
 
-def generate_guide(client: anthropic.Anthropic, app_name: str) -> str:
-    messages = [{"role": "user", "content": f"Write the OAuth setup guide for: {app_name}"}]
-    tools = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 8}]
+def generate_guide(client: genai.Client, app_name: str) -> tuple[str, list[tuple[str, str]]]:
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=f"Write the OAuth setup guide for: {app_name}",
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+        ),
+    )
+    guide = response.text or "The agent could not write a guide. Try a different app name."
 
-    for _ in range(4):  # resume a few times if the server-side search loop pauses
-        response = client.beta.messages.create(
-            model="claude-opus-5-5",
-            max_tokens=16000,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-            tools=tools,
-            output_config={"effort": "medium"},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-        )
-        if response.stop_reason != "pause_turn":
-            break
-        messages = [messages[0], {"role": "assistant", "content": response.content}]
-
-    if response.stop_reason == "refusal":
-        return "The model declined this request. Try a different app name."
-    return "\n".join(block.text for block in response.content if block.type == "text")
+    # Pages Google Search actually returned to the agent, so readers can check its claims.
+    searched = []
+    metadata = response.candidates[0].grounding_metadata if response.candidates else None
+    for chunk in (metadata.grounding_chunks or []) if metadata else []:
+        if chunk.web and chunk.web.uri:
+            searched.append((chunk.web.title or chunk.web.domain or "Source", chunk.web.uri))
+    return guide, searched
 
 
 st.title("🔑 OAuth App Setup Guides")
@@ -78,19 +75,23 @@ with generate_tab:
     st.write("Enter an app name or website. An agent researches it live (about 1–3 minutes).")
     app_name = st.text_input("App name or website", placeholder="e.g. Notion or notion.so")
     if st.button("Generate guide") and app_name.strip():
-        client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+        client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
         with st.spinner(f"Researching {app_name}..."):
             try:
-                guide = generate_guide(client, app_name.strip())
-            except anthropic.RateLimitError:
-                st.error("Too many requests right now. Please wait a minute and try again.")
+                guide, searched = generate_guide(client, app_name.strip())
+            except errors.ClientError as e:
+                if e.code == 429:
+                    st.error("The free daily limit was reached. Please try again later.")
+                else:
+                    st.error(f"The request was rejected ({e.code}). Check the API key in Streamlit secrets.")
                 st.stop()
-            except anthropic.APIStatusError as e:
-                st.error(f"The API returned an error ({e.status_code}). Please try again.")
-                st.stop()
-            except anthropic.APIConnectionError:
-                st.error("Could not reach the API. Check your connection and try again.")
+            except errors.APIError:
+                st.error("The AI service had a problem. Please try again in a minute.")
                 st.stop()
         st.warning("AI-generated and not yet verified by a human. Check 📄 sources before relying on it.")
         st.markdown(guide)
+        if searched:
+            with st.expander(f"Pages the agent searched ({len(searched)})"):
+                for title, uri in searched:
+                    st.markdown(f"- [{title}]({uri})")
         st.download_button("Download guide (.md)", guide, file_name=f"{app_name.strip()}.md")
