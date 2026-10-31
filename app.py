@@ -35,15 +35,38 @@ Rules:
 """
 
 
+# Tried in order. Free-tier keys can't use every model or tool, so fall back
+# from Google Search grounding to reading official docs pages by URL.
+ATTEMPTS = [
+    ("gemini-2.5-flash", "google_search"),
+    ("gemini-2.5-flash-lite", "google_search"),
+    ("gemini-3.6-flash", "url_context"),
+    ("gemini-3.5-flash-lite", "url_context"),
+]
+
+
 def generate_guide(client: genai.Client, app_name: str) -> tuple[str, list[tuple[str, str]]]:
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=f"Write the OAuth setup guide for: {app_name}",
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-        ),
-    )
+    last_error = None
+    for model, tool_name in ATTEMPTS:
+        tool = (
+            types.Tool(google_search=types.GoogleSearch())
+            if tool_name == "google_search"
+            else types.Tool(url_context=types.UrlContext())
+        )
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=f"Write the OAuth setup guide for: {app_name}",
+                config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT, tools=[tool]),
+            )
+            break
+        except errors.ClientError as e:
+            if e.code == 401 or e.code == 403:
+                raise
+            last_error = e  # model or tool not available on this key; try the next one
+    else:
+        raise last_error
+
     guide = response.text or "The agent could not write a guide. Try a different app name."
 
     # Pages Google Search actually returned to the agent, so readers can check its claims.
@@ -83,7 +106,7 @@ with generate_tab:
                 if e.code == 429:
                     st.error("The free daily limit was reached. Please try again later.")
                 else:
-                    st.error(f"The request was rejected ({e.code}). Check the API key in Streamlit secrets.")
+                    st.error(f"The request was rejected ({e.code}): {e.message}")
                 st.stop()
             except errors.APIError:
                 st.error("The AI service had a problem. Please try again in a minute.")
